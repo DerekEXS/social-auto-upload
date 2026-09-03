@@ -676,14 +676,31 @@ class KSVideo(KSBaseUploader):
                 await asyncio.sleep(2)
 
             loop = asyncio.get_running_loop()
-            upload_deadline = loop.time() + KUAISHOU_UPLOAD_TIMEOUT_SECONDS
+            # 2026-09-03: 上传等待按文件大小动态放宽（大视频固定 480s 不够, 855MB 曾误判）,
+            # 并加正向确认（"上传完成/上传成功/处理完成"文案 或 发布按钮可点）,
+            # 防止"上传中"文案短暂消失导致的误判
+            try:
+                file_size_mb = max(1, os.path.getsize(self.file_path) // (1024 * 1024))
+            except OSError:
+                file_size_mb = 200
+            upload_timeout = max(KUAISHOU_UPLOAD_TIMEOUT_SECONDS, file_size_mb * 60 // 100 + 300)
+            upload_deadline = loop.time() + upload_timeout
             retry_count = 0
             while loop.time() < upload_deadline:
                 try:
                     number = await page.locator("text=上传中").count()
                     if number == 0:
-                        kuaishou_logger.success(_msg("🥳", "视频已经传完啦"))
-                        break
+                        done_text = await page.locator("text=/上传完成|上传成功|处理完成/").count()
+                        publish_btn = page.get_by_text("发布", exact=True).first
+                        publish_ready = False
+                        if await publish_btn.count():
+                            try:
+                                publish_ready = await publish_btn.is_enabled()
+                            except Exception:
+                                publish_ready = False
+                        if done_text > 0 or publish_ready:
+                            kuaishou_logger.success(_msg("🥳", "视频已经传完啦"))
+                            break
 
                     if retry_count % 5 == 0:
                         kuaishou_logger.info(_msg("🏃", "小人正在努力上传视频"))
@@ -698,7 +715,7 @@ class KSVideo(KSBaseUploader):
                 retry_count += 1
             else:
                 raise TimeoutError(
-                    f"等待快手视频上传完成超时（>{KUAISHOU_UPLOAD_TIMEOUT_SECONDS}秒），已停止发布"
+                    f"等待快手视频上传完成超时（>{upload_timeout}秒, 文件{file_size_mb}MB），已停止发布"
                 )
 
             await self.set_thumbnail(page)

@@ -943,6 +943,16 @@ class DouYinVideo(DouYinBaseUploader):
                     closed = True
                     break
 
+            # 2026-09-03 实测: 只设横封面时点"完成"会弹"设置竖封面获更多流量"引导弹窗
+            # (按钮为"暂不设置"/"设置竖封面", 不在下方确认类列表中) → 优先点"暂不设置"
+            skip_guidance = page.get_by_role("button", name="暂不设置", exact=True).first
+            if await skip_guidance.count() and await skip_guidance.is_visible():
+                await skip_guidance.click()
+                await page.wait_for_timeout(1500)
+                if await cover_locator.count() == 0:
+                    closed = True
+                    break
+
             # 点"完成"后抖音可能弹二次确认（如未设横封面时问"确定完成？"）→ 点确认类按钮
             for cname in ["确定", "确认", "仍然完成", "仍要完成", "继续"]:
                 confirm = page.locator(".semi-modal-content").get_by_role("button", name=cname, exact=True).first
