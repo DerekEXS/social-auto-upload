@@ -1078,12 +1078,24 @@ class DouYinVideo(DouYinBaseUploader):
             await self.set_schedule_time_douyin(page, self.publish_date)
 
         sms_prompt_logged = False
-        while True:
+        # 2026-09-04: 发布循环加 30 分钟总时限(上游 while True 在弹窗拦截场景会无限循环,
+        # 实测曾挂 19 小时), 超时 raise 明确失败让 YSS 计数重试
+        publish_deadline = asyncio.get_running_loop().time() + 1800
+        while asyncio.get_running_loop().time() < publish_deadline:
             try:
                 # 移除会拦截发布按钮点击的新手引导/话题下拉浮层
                 await page.evaluate(
                     "() => { document.querySelectorAll('.shepherd-element, .shepherd-modal-overlay-container, [class*=\"mention-wrapper\"]').forEach(e => e.remove()); }"
                 )
+                # 2026-09-03 实测: 残留的"设置竖封面获更多流量"引导弹窗会挡住发布点击
+                try:
+                    stray_skip = page.get_by_role("button", name="暂不设置", exact=True)
+                    if await stray_skip.count() and await stray_skip.is_visible():
+                        await stray_skip.click()
+                        douyin_logger.info(_msg("🙅", "发布前发现残留竖封面引导, 已点'暂不设置'"))
+                        await page.wait_for_timeout(800)
+                except Exception:
+                    pass
                 # 检测并处理短信验证码弹窗
                 sms_input = page.locator('input[placeholder*="验证码"], input[type="tel"], input[placeholder*="短信"], input[placeholder*="手机号"]').first
                 if await sms_input.count() and await sms_input.is_visible():
@@ -1118,6 +1130,14 @@ class DouYinVideo(DouYinBaseUploader):
                 if self.debug:
                     await page.screenshot(full_page=True)
                 await asyncio.sleep(0.5)
+        else:
+            # 先关浏览器再抛错(upload() 无 try/finally 兜底, 避免留下孤儿 Chromium 窗口)
+            try:
+                await context.close()
+                await browser.close()
+            except Exception:
+                pass
+            raise TimeoutError("抖音发布循环超时(30分钟)停止重试；视频可能停留在发布页未发出，请人工检查抖音草稿箱")
 
         await context.storage_state(path=self.account_file)
         douyin_logger.success(_msg("🥳", "cookie 更新完毕"))
