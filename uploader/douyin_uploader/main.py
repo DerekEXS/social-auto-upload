@@ -884,25 +884,41 @@ class DouYinVideo(DouYinBaseUploader):
         if await cover_upload.count() == 0:
             cover_upload = cover_locator.locator("input.semi-upload-hidden-input").last
 
+        # 2026-10-01 改：两个封面都给就两个都设（竖/横是弹窗里两个独立槽位，可并存）。
+        #   原逻辑 if/elif——同时给两个时只会上传竖版，横版槽位保持空。
+        #   每段各自 try/except：封面传失败只降级（告警、继续发布），
+        #   绝不因为封面把整条无人值守发布搅黄（08:00 前发布是硬需求）。
         if self.thumbnail_portrait_path:
-            # 弹窗默认就在“设置竖封面”页；防御性点一下 tab（已激活则忽略）
             try:
-                await cover_locator.get_by_text("设置竖封面", exact=True).first.click(timeout=3000)
-                await page.wait_for_timeout(800)
-            except Exception:
-                pass
-            await cover_upload.set_input_files(self.thumbnail_portrait_path)
-            await page.wait_for_timeout(3000)
-            douyin_logger.info(_msg("🖼️", "竖版封面已上传到预览"))
-        elif self.thumbnail_landscape_path:
+                # 弹窗默认就在“设置竖封面”页；防御性点一下 tab（已激活则忽略）
+                try:
+                    await cover_locator.get_by_text("设置竖封面", exact=True).first.click(timeout=3000)
+                    await page.wait_for_timeout(800)
+                except Exception:
+                    pass
+                await cover_upload.set_input_files(self.thumbnail_portrait_path)
+                await page.wait_for_timeout(3000)
+                douyin_logger.info(_msg("🖼️", "竖版封面已上传到预览"))
+            except Exception as e:  # noqa: BLE001
+                douyin_logger.warning(_msg("😵", f"竖版封面上传失败，跳过(不阻塞发布): {e}"))
+        if self.thumbnail_landscape_path:
             try:
-                await cover_locator.get_by_text("设置横封面", exact=True).first.click(timeout=3000)
-                await page.wait_for_timeout(800)
-            except Exception:
-                pass
-            await cover_upload.set_input_files(self.thumbnail_landscape_path)
-            await page.wait_for_timeout(3000)
-            douyin_logger.info(_msg("🖼️", "横版封面已上传到预览"))
+                try:
+                    await cover_locator.get_by_text("设置横封面", exact=True).first.click(timeout=3000)
+                    await page.wait_for_timeout(800)
+                except Exception:
+                    pass
+                # 竖版传完后弹窗换成了预览态，上传 input 位置会变——重新解析一次再传
+                cover_upload_l = cover_locator.locator(
+                    '.semi-upload:has(.semi-upload-drag-area-main-text) input.semi-upload-hidden-input'
+                ).first
+                if await cover_upload_l.count() == 0:
+                    cover_upload_l = cover_locator.locator("input.semi-upload-hidden-input").last
+                await cover_upload_l.set_input_files(self.thumbnail_landscape_path)
+                await page.wait_for_timeout(3000)
+                douyin_logger.info(_msg("🖼️", "横版封面已上传到预览"))
+            except Exception as e:  # noqa: BLE001
+                douyin_logger.warning(_msg("😵", f"横版封面上传失败，跳过(不阻塞发布): {e}"))
 
         # ── 等"完成"按钮解禁：封面图处理完成前，"完成"是 semi-button-disabled，点了无效 ──
         def _finish_btn():
